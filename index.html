@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Бесплатный кейс</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.3/dist/confetti.browser.min.js"></script>
+<style>
+  :root {
+    --bg: #0b0d14;
+    --panel: #141826;
+    --blue: #4b9cff;
+    --purple: #b04bff;
+    --gold: #ffc83d;
+    --neon: #00f0ff;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; height: 100%;
+    background: radial-gradient(ellipse at top, #1a1f36 0%, var(--bg) 60%);
+    color: #fff; font-family: "Segoe UI", Roboto, Arial, sans-serif;
+    overflow: hidden; user-select: none;
+  }
+  .app {
+    min-height: 100%; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 28px; padding: 16px;
+  }
+  h1 {
+    margin: 0; font-size: 26px; letter-spacing: 3px; text-align: center;
+    color: var(--neon);
+    text-shadow: 0 0 8px var(--neon), 0 0 24px rgba(0,240,255,.5);
+  }
+
+  /* --- Рулетка --- */
+  .roulette {
+    position: relative; width: 100%; max-width: 560px; height: 150px;
+    background: var(--panel); border: 1px solid #262c45; border-radius: 12px;
+    overflow: hidden; box-shadow: 0 0 24px rgba(0,240,255,.12) inset;
+  }
+  .roulette::before, .roulette::after {
+    content: ""; position: absolute; top: 0; bottom: 0; width: 70px; z-index: 2; pointer-events: none;
+  }
+  .roulette::before { left: 0;  background: linear-gradient(90deg, var(--bg), transparent); }
+  .roulette::after  { right: 0; background: linear-gradient(-90deg, var(--bg), transparent); }
+  .pointer {
+    position: absolute; left: 50%; top: 0; bottom: 0; width: 3px; z-index: 3;
+    transform: translateX(-50%); background: var(--neon);
+    box-shadow: 0 0 10px var(--neon), 0 0 22px var(--neon);
+  }
+  .pointer::before, .pointer::after {
+    content: ""; position: absolute; left: 50%; transform: translateX(-50%);
+    border: 8px solid transparent;
+  }
+  .pointer::before { top: 0;    border-top-color: var(--neon); }
+  .pointer::after  { bottom: 0; border-bottom-color: var(--neon); }
+
+  .track {
+    position: absolute; left: 0; top: 0; height: 100%;
+    display: flex; align-items: center; will-change: transform;
+  }
+  .card {
+    flex: 0 0 120px; width: 120px; height: 126px; padding: 0 6px;
+  }
+  .card .inner {
+    height: 100%; border-radius: 10px; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 4px;
+    background: linear-gradient(180deg, #1b2036, #10131f);
+    border: 2px solid var(--c); border-bottom-width: 4px;
+    transition: box-shadow .4s, transform .4s;
+  }
+  .card .amount { font-size: 28px; font-weight: 800; color: #fff; }
+  .card .star { font-size: 30px; line-height: 1; }
+  .card .rarity { font-size: 10px; letter-spacing: 1px; text-transform: uppercase; color: var(--c); }
+  .card.rare      { --c: var(--blue); }
+  .card.epic      { --c: var(--purple); }
+  .card.legendary { --c: var(--gold); }
+
+  .card.win .inner {
+    transform: scale(1.08);
+    box-shadow: 0 0 12px var(--c), 0 0 32px var(--c), inset 0 0 18px rgba(255,255,255,.12);
+    animation: pulse 1s ease-in-out infinite alternate;
+  }
+  @keyframes pulse {
+    from { box-shadow: 0 0 10px var(--c), 0 0 24px var(--c); }
+    to   { box-shadow: 0 0 18px var(--c), 0 0 46px var(--c); }
+  }
+
+  /* --- Кнопка --- */
+  button#spin {
+    font-size: 20px; font-weight: 800; letter-spacing: 2px; color: #04121a;
+    padding: 16px 56px; border: none; border-radius: 12px; cursor: pointer;
+    background: linear-gradient(180deg, #34f5ff, #00b7d6);
+    box-shadow: 0 0 18px rgba(0,240,255,.6), 0 4px 0 #007a91;
+    transition: transform .1s, opacity .2s, box-shadow .1s;
+  }
+  button#spin:active:not(:disabled) { transform: translateY(3px); box-shadow: 0 0 18px rgba(0,240,255,.6), 0 1px 0 #007a91; }
+  button#spin:disabled { opacity: .45; cursor: default; }
+
+  .result { min-height: 40px; text-align: center; }
+  .result .prize { font-size: 22px; font-weight: 800; color: var(--gold); opacity: 0; transition: opacity .5s; }
+  .result .note  { font-size: 12px; color: #8b93b5; margin-top: 6px; opacity: 0; transition: opacity .5s .3s; }
+  .result.show .prize, .result.show .note { opacity: 1; }
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>БЕСПЛАТНЫЙ КЕЙС</h1>
+
+  <div class="roulette" id="roulette">
+    <div class="pointer"></div>
+    <div class="track" id="track"></div>
+  </div>
+
+  <button id="spin">КРУТИТЬ</button>
+
+  <div class="result" id="result">
+    <div class="prize" id="prizeText"></div>
+    <div class="note">звезды начислены на баланс бота</div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) { tg.ready(); tg.expand(); try { tg.setHeaderColor('#0b0d14'); tg.setBackgroundColor('#0b0d14'); } catch (e) {} }
+
+  // Призы и шансы (для ленты и демо-режима)
+  const PRIZES = [
+    { stars: 2,  chance: 84, cls: 'rare',      label: 'редкий' },
+    { stars: 5,  chance: 15, cls: 'epic',      label: 'эпический' },
+    { stars: 15, chance: 1,  cls: 'legendary', label: 'легендарный' },
+  ];
+
+  const CARD_W = 120;       // должно совпадать с .card width
+  const TOTAL = 60;         // карточек в ленте
+  const WIN_INDEX = 48;     // позиция остановки
+  const SPIN_MS = 5000;
+
+  const track = document.getElementById('track');
+  const roulette = document.getElementById('roulette');
+  const btn = document.getElementById('spin');
+  const result = document.getElementById('result');
+  const prizeText = document.getElementById('prizeText');
+
+  function weightedRandom() {
+    let r = Math.random() * 100, acc = 0;
+    for (const p of PRIZES) { acc += p.chance; if (r < acc) return p; }
+    return PRIZES[0];
+  }
+
+  // Приз определяет бот и передаёт в ?prize=. Без параметра — демо-режим (ничего не отправляется).
+  const params = new URLSearchParams(location.search);
+  const serverPrize = parseFloat(params.get('prize'));
+  const isDemo = !PRIZES.some(p => p.stars === serverPrize);
+  const winPrize = isDemo ? weightedRandom() : PRIZES.find(p => p.stars === serverPrize);
+
+  function cardHTML(p, win) {
+    return `<div class="card ${p.cls}${win ? ' win-target' : ''}">
+      <div class="inner">
+        <div class="star">⭐️</div>
+        <div class="amount">${p.stars}</div>
+        <div class="rarity">${p.label}</div>
+      </div></div>`;
+  }
+
+  function buildTrack() {
+    let html = '';
+    for (let i = 0; i < TOTAL; i++) {
+      html += cardHTML(i === WIN_INDEX ? winPrize : weightedRandom(), i === WIN_INDEX);
+    }
+    track.innerHTML = html;
+    track.style.transition = 'none';
+    track.style.transform = 'translateX(0)';
+  }
+  buildTrack();
+
+  function haptic(type) {
+    try { tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred(type); } catch (e) {}
+  }
+
+  function fireConfetti() {
+    const end = Date.now() + 2200;
+    const colors = ['#00f0ff', '#ffc83d', '#b04bff', '#4b9cff'];
+    (function frame() {
+      confetti({ particleCount: 6, angle: 60,  spread: 70, origin: { x: 0, y: 0.7 }, colors });
+      confetti({ particleCount: 6, angle: 120, spread: 70, origin: { x: 1, y: 0.7 }, colors });
+      if (Date.now() < end) requestAnimationFrame(frame);
+    })();
+    confetti({ particleCount: 140, spread: 100, origin: { y: 0.6 }, colors });
+  }
+
+  let spinning = false;
+  btn.addEventListener('click', () => {
+    if (spinning) return;
+    spinning = true;
+    btn.disabled = true;
+    try { tg && tg.HapticFeedback && tg.HapticFeedback.impactOccurred('medium'); } catch (e) {}
+
+    // Центр выигрышной карточки под указателем + небольшой сдвиг внутри карточки
+    const jitter = (Math.random() - 0.5) * (CARD_W * 0.6);
+    const target = WIN_INDEX * CARD_W + CARD_W / 2 - roulette.clientWidth / 2 + jitter;
+
+    void track.offsetWidth; // reflow, чтобы transition сработал
+    track.style.transition = `transform ${SPIN_MS}ms cubic-bezier(0.08, 0.6, 0.12, 1)`;
+    track.style.transform = `translateX(${-target}px)`;
+
+    setTimeout(onFinish, SPIN_MS + 100);
+  });
+
+  function onFinish() {
+    const winCard = track.querySelector('.win-target');
+    if (winCard) winCard.classList.add('win');
+
+    prizeText.textContent = `Вы выиграли ${winPrize.stars} ⭐️`;
+    result.classList.add('show');
+    fireConfetti();
+    haptic('success');
+
+    // Через 3 секунды отправляем событие боту (Telegram закроет окно).
+    // Сумму бот берёт из своей БД, stars здесь только для информации.
+    if (tg && tg.initData && !isDemo) {
+      setTimeout(() => {
+        tg.sendData(JSON.stringify({ action: 'claim_case', stars: winPrize.stars }));
+      }, 3000);
+    }
+  }
+})();
+</script>
+</body>
+</html>
