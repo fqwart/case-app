@@ -101,6 +101,7 @@
   .result .prize { font-size: 22px; font-weight: 800; color: var(--gold); opacity: 0; transition: opacity .5s; }
   .result .note  { font-size: 12px; color: #8b93b5; margin-top: 6px; opacity: 0; transition: opacity .5s .3s; }
   .result.show .prize, .result.show .note { opacity: 1; }
+  .result .prize.err { color: #ff6b6b; font-size: 15px; font-weight: 600; line-height: 1.35; padding: 0 12px; }
 </style>
 </head>
 <body>
@@ -116,12 +117,17 @@
 
   <div class="result" id="result">
     <div class="prize" id="prizeText"></div>
-    <div class="note">звезды начислены на баланс бота</div>
+    <div class="note" id="note"></div>
   </div>
 </div>
 
 <script>
 (function () {
+  // Адрес HTTP-API бота (без слэша в конце), например "https://bot.example.com".
+  // Нужен, когда кейс открывается inline-кнопкой (там sendData недоступен).
+  // Пусто — работает только запуск из бота командой /case (через sendData).
+  const API_URL = "";
+
   const tg = window.Telegram && window.Telegram.WebApp;
   if (tg) { tg.ready(); tg.expand(); try { tg.setHeaderColor('#0b0d14'); tg.setBackgroundColor('#0b0d14'); } catch (e) {} }
 
@@ -142,18 +148,33 @@
   const btn = document.getElementById('spin');
   const result = document.getElementById('result');
   const prizeText = document.getElementById('prizeText');
+  const noteEl = document.getElementById('note');
 
   function weightedRandom() {
     let r = Math.random() * 100, acc = 0;
     for (const p of PRIZES) { acc += p.chance; if (r < acc) return p; }
     return PRIZES[0];
   }
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-  // Приз определяет бот и передаёт в ?prize=. Без параметра — демо-режим (ничего не отправляется).
+  // --- Режим работы -----------------------------------------------------------
+  // senddata    — запуск из бота (/case): приз и spin пришли в ?prize=&spin=, результат уходит через sendData
+  // api         — запуск inline-кнопкой: приз выдаёт и начисляет HTTP-API бота (проверка по initData)
+  // unavailable — внутри Telegram, но способа связаться с ботом нет
+  // demo        — открыто вне Telegram (просто посмотреть анимацию)
   const params = new URLSearchParams(location.search);
-  const serverPrize = parseFloat(params.get('prize'));
-  const isDemo = !PRIZES.some(p => p.stars === serverPrize);
-  const winPrize = isDemo ? weightedRandom() : PRIZES.find(p => p.stars === serverPrize);
+  const urlPrize = PRIZES.find(p => p.stars === parseFloat(params.get('prize')));
+  const urlSpin = params.get('spin') || '';
+  const inTelegram = !!(tg && tg.initData);
+
+  let MODE;
+  if (urlPrize && inTelegram) MODE = 'senddata';
+  else if (API_URL && inTelegram) MODE = 'api';
+  else if (inTelegram) MODE = 'unavailable';
+  else MODE = 'demo';
+
+  let winPrize = urlPrize || null;
+  let spinId = urlSpin;
 
   function cardHTML(p, win) {
     return `<div class="card ${p.cls}${win ? ' win-target' : ''}">
@@ -167,7 +188,7 @@
   function buildTrack() {
     let html = '';
     for (let i = 0; i < TOTAL; i++) {
-      html += cardHTML(i === WIN_INDEX ? winPrize : weightedRandom(), i === WIN_INDEX);
+      html += cardHTML(i === WIN_INDEX && winPrize ? winPrize : weightedRandom(), i === WIN_INDEX);
     }
     track.innerHTML = html;
     track.style.transition = 'none';
@@ -175,8 +196,21 @@
   }
   buildTrack();
 
+  // Выигрышная карточка за экраном: подменяем её, когда приз стал известен
+  function setWinCard(p) {
+    winPrize = p;
+    const old = track.querySelector('.win-target');
+    if (old) old.outerHTML = cardHTML(p, true);
+  }
+
   function haptic(type) {
     try { tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred(type); } catch (e) {}
+  }
+
+  function showMessage(text, isError) {
+    prizeText.textContent = text;
+    prizeText.classList.toggle('err', !!isError);
+    result.classList.add('show');
   }
 
   function fireConfetti() {
@@ -190,12 +224,54 @@
     confetti({ particleCount: 140, spread: 100, origin: { y: 0.6 }, colors });
   }
 
+  async function api(path, body) {
+    const r = await fetch(API_URL + path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(Object.assign({ initData: tg.initData }, body || {})),
+    });
+    return r.json();
+  }
+
+  function errorText(r) {
+    if (!r) return 'Не удалось связаться с ботом. Попробуйте позже.';
+    if (r.error === 'bad_init_data') return 'Откройте кейс из бота.';
+    return r.error || 'Кейс сейчас недоступен.';
+  }
+
   let spinning = false;
-  btn.addEventListener('click', () => {
+  let claimRetry = false;
+
+  if (MODE === 'unavailable') {
+    showMessage('Откройте кейс командой /case в боте.', true);
+    btn.disabled = true;
+  }
+
+  btn.addEventListener('click', async () => {
     if (spinning) return;
+    if (claimRetry) { claimPrize(); return; }
+    if (MODE === 'unavailable') return;
+
     spinning = true;
     btn.disabled = true;
+    result.classList.remove('show');
     try { tg && tg.HapticFeedback && tg.HapticFeedback.impactOccurred('medium'); } catch (e) {}
+
+    if (MODE === 'api') {
+      // Приз выбирает бот; повторное открытие даёт тот же приз
+      let s = null;
+      try { s = await api('/api/case/spin'); } catch (e) {}
+      const p = s && s.ok ? PRIZES.find(x => x.stars === Number(s.prize)) : null;
+      if (!p) {
+        showMessage(errorText(s), true);
+        spinning = false; btn.disabled = false;
+        return;
+      }
+      spinId = s.spin_id;
+      setWinCard(p);
+    } else if (MODE === 'demo') {
+      setWinCard(weightedRandom());
+    }
 
     // Центр выигрышной карточки под указателем + небольшой сдвиг внутри карточки
     const jitter = (Math.random() - 0.5) * (CARD_W * 0.6);
@@ -212,18 +288,52 @@
     const winCard = track.querySelector('.win-target');
     if (winCard) winCard.classList.add('win');
 
-    prizeText.textContent = `Вы выиграли ${winPrize.stars} ⭐️`;
-    result.classList.add('show');
+    showMessage(`Вы выиграли ${winPrize.stars} ⭐️`, false);
     fireConfetti();
     haptic('success');
 
-    // Через 3 секунды отправляем событие боту (Telegram закроет окно).
-    // Сумму бот берёт из своей БД, stars здесь только для информации.
-    if (tg && tg.initData && !isDemo) {
+    if (MODE === 'senddata') {
+      // Через 3 секунды отправляем результат боту (Telegram закроет окно).
+      // Сумму бот берёт из своей БД, spin_id защищает от двойного начисления.
+      noteEl.textContent = 'звезды начислены на баланс бота';
       setTimeout(() => {
-        tg.sendData(JSON.stringify({ action: 'claim_case', stars: winPrize.stars }));
+        tg.sendData(JSON.stringify({ action: 'claim_case', spin_id: spinId, stars: winPrize.stars }));
       }, 3000);
+    } else if (MODE === 'api') {
+      claimPrize();
+    } else {
+      noteEl.textContent = 'демо-режим: звёзды не начисляются';
     }
+  }
+
+  // Начисление через HTTP-API бота: 3 попытки; если связи нет — кнопка «ЗАБРАТЬ ПРИЗ».
+  // Приз при этом не пропадает: он сохранён на стороне бота под этим spin_id.
+  async function claimPrize() {
+    btn.disabled = true;
+    noteEl.textContent = 'начисляем звёзды...';
+    for (let i = 0; i < 3; i++) {
+      let r = null;
+      try { r = await api('/api/case/claim', { spin_id: spinId }); } catch (e) {}
+      if (r && r.ok) {
+        claimRetry = false;
+        noteEl.textContent = 'звезды начислены на баланс бота';
+        haptic('success');
+        setTimeout(() => { try { tg.close(); } catch (e) {} }, 3500);
+        return;
+      }
+      if (r && r.status && r.status !== 'ok' && r.status !== 'already') {
+        // бот ответил отказом (условия кейса не выполнены) — повторять бессмысленно
+        noteEl.textContent = '';
+        showMessage(errorText(r), true);
+        return;
+      }
+      await sleep(1500);
+    }
+    claimRetry = true;
+    spinning = false;
+    noteEl.textContent = 'нет связи с ботом — нажмите кнопку, приз сохранён';
+    btn.textContent = 'ЗАБРАТЬ ПРИЗ';
+    btn.disabled = false;
   }
 })();
 </script>
